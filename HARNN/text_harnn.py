@@ -17,7 +17,7 @@ class AttentionLayer(nn.Module):
         attention_matrix = self.fc2(torch.tanh(self.fc1(input_x))).transpose(1, 2)
         attention_weight = torch.softmax(attention_matrix, dim=-1)
         attention_out = torch.matmul(attention_weight, input_x)
-        return attention_weight, torch.mean(attention_out, dim=(1,))
+        return attention_weight, torch.mean(attention_out, dim=1)
 
 
 class LocalLayer(nn.Module):
@@ -30,7 +30,7 @@ class LocalLayer(nn.Module):
         scores = torch.sigmoid(logits)
         visual = torch.mul(input_att_weight, scores.unsqueeze(-1))
         visual = torch.softmax(visual, dim=-1)
-        visual = torch.mean(visual, dim=(1,))
+        visual = torch.mean(visual, dim=1)
         return logits, scores, visual
 
 
@@ -96,11 +96,11 @@ class TextHARNN(nn.Module):
         embedded_sentence = self.embedding(input_x)
         # Average Vectors
         # [batch_size, embedding_size]
-        embedded_sentence_average = torch.mean(embedded_sentence, dim=(1,))
+        embedded_sentence_average = torch.mean(embedded_sentence, dim=1)
 
         # Bi-LSTM Layer
         lstm_out, _ = self.bi_lstm(embedded_sentence)
-        lstm_out_pool = torch.mean(lstm_out, dim=(1,))
+        lstm_out_pool = torch.mean(lstm_out, dim=1)
 
         # First Level
         first_att_weight, first_att_out = self.first_attention(lstm_out)
@@ -148,11 +148,11 @@ class TextHARNN(nn.Module):
         global_scores = torch.sigmoid(global_logits)
         local_scores = torch.cat((first_scores, second_scores, third_scores, fourth_scores), dim=1)
         scores = self.beta * global_scores + (1 - self.beta) * local_scores
-        return scores
+        return scores, (first_logits, second_logits, third_logits, fourth_logits,
+                        global_logits, first_scores, second_scores)
 
 
 if __name__ == '__main__':
-    print("Init nn")
     textHARNN = TextHARNN(num_classes_list=[9, 128, 661, 8364], total_classes=9162,
                           vocab_size=1024, lstm_hidden_size=256, attention_unit_size=200, fc_hidden_size=512,
                           embedding_size=100, embedding_type=1, beta=0.5, dropout_keep_prob=0.5)
