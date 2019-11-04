@@ -1,20 +1,22 @@
 # -*- coding:utf-8 -*-
-__author__ = 'Randolph'
+__author__ = 'hy'
 
+import time
+import os
 import torch
 import torch.nn as nn
-from text_harnn import TextHARNN
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import TensorDataset, DataLoader
 import torch.optim
-from utils import data_helper as dh
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, average_precision_score
+from text_harnn import TextHARNN
+from utils import data_helper as dh
 
 # Parameters
-# train_or_restore = input("☛ Train or Restore?(T/R): ")
-# while not (train_or_restore.isalpha() and train_or_restore.upper() in ['T', 'R']):
-#     train_or_restore = input("✘ The format of your input is illegal, please re-input: ")
-# train_or_restore = train_or_restore.upper()
+train_or_restore = input("☛ Train or Restore?(T/R): ")
+while not (train_or_restore.isalpha() and train_or_restore.upper() in ['T', 'R']):
+    train_or_restore = input("✘ The format of your input is illegal, please re-input: ")
+train_or_restore = train_or_restore.upper()
 
 # Data Parameters
 training_data_file = '../data/train_sample.json'
@@ -81,7 +83,6 @@ class Loss(nn.Module):
 
 
 def train_harnn():
-    writer = SummaryWriter('runs/harnn_experiment_1')
     print("Loading Data")
     train_data = dh.load_data_and_labels(training_data_file, num_classes_list,
                                          total_classes, embedding_dim, data_aug_flag=False)
@@ -91,8 +92,8 @@ def train_harnn():
     x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3 = dh.pad_data(val_data, pad_seq_len)
     train_dataset = TensorDataset(x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3)
     val_dataset = TensorDataset(x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=1)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=1)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     vocab_size, pretrained_word2vec_matrix = dh.load_word2vec_matrix(embedding_dim)
 
     print("Init nn")
@@ -102,8 +103,19 @@ def train_harnn():
                     beta=beta, dropout_keep_prob=dropout_keep_prob)
     criterion = Loss(alpha)
     optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate, weight_decay=l2_reg_lambda)
+    if train_or_restore == 'R':
+        model = input("☛ Please input the checkpoints model you want to restore, "
+                      "it should be like(1490175368): ")  # The model you want to restore
+        while not (model.isdigit() and len(model) == 10):
+            model = input("✘ The format of your input is illegal, please re-input: ")
+        out_dir = os.path.abspath(os.path.join(os.path.curdir, "runs/model", model))
+        checkpoint = torch.load(out_dir)
+        net.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        model.train()
 
     print("Training")
+    writer = SummaryWriter('runs/harnn_experiment_1')
     for epoch in range(num_epochs):
         running_loss = 0.0
         i = 0
@@ -118,6 +130,12 @@ def train_harnn():
             print('[%d, %5d] loss: %.3f' % (epoch + 1, i + 1, running_loss / 2000))
             writer.add_scalar('training loss', running_loss / 1000, epoch * len(train_loader) + i)
             i += 1
+        timestamp = str(int(time.time()))
+        out_dir = os.path.abspath(os.path.join(os.path.curdir, "runs/model", timestamp))
+        torch.save({
+            'model_state_dict': net.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }, out_dir)
     writer.add_graph(net, x_train)
     writer.close()
 
