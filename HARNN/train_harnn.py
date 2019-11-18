@@ -3,6 +3,7 @@ __author__ = 'hy'
 
 import time
 import os
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
@@ -13,11 +14,6 @@ from text_harnn import TextHARNN
 from utils import data_helper as dh
 
 # Parameters
-train_or_restore = input("☛ Train or Restore?(T/R): ")
-while not (train_or_restore.isalpha() and train_or_restore.upper() in ['T', 'R']):
-    train_or_restore = input("✘ The format of your input is illegal, please re-input: ")
-train_or_restore = train_or_restore.upper()
-
 # Data Parameters
 training_data_file = '../data/train_sample.json'
 validation_data_file = '../data/validation_sample.json'
@@ -42,8 +38,14 @@ threshold = 0.5
 harnn_type = 'TextHARNN'
 
 # Training Parameters
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
 batch_size = 4
-num_epochs = 5
+num_epochs = 20
+evaluate_every = 5
+checkpoint_every = 20
 
 
 class Loss(nn.Module):
@@ -69,38 +71,47 @@ class Loss(nn.Module):
         # Hierarchical violation Loss
         if alpha == 0:
             return local_losses + global_losses
-        index_list = [(0, 15), (15, 37), (52, 20), (72, 9), (81, 7), (88, 17), (106, 14), (120, 5), (125, 3)]
-        violation_losses = 0.0
-        for i in range(len(index_list)):
-            (left_index, step) = index_list[i]
-            current_parent_scores = first_scores[:, i]
-            current_child_scores = second_scores[:, left_index:left_index+step]
-            margin = torch.max(current_child_scores - current_parent_scores, 0)
-            losses = self.MSELoss(margin)
-            violation_losses = violation_losses + self.alpha * losses
-
-        return local_losses + global_losses + violation_losses
+        # index_list = [(0, 15), (15, 37), (52, 20), (72, 9), (81, 7), (88, 17), (106, 14), (120, 5), (125, 3)]
+        # violation_losses = 0.0
+        # for i in range(len(index_list)):
+        #     (left_index, step) = index_list[i]
+        #     current_parent_scores = first_scores[:, i]
+        #     current_child_scores = second_scores[:, left_index:left_index+step]
+        #     margin = torch.max(current_child_scores - current_parent_scores, 0)
+        #     losses = self.MSELoss(margin)
+        #     violation_losses = violation_losses + self.alpha * losses
+        #
+        # return local_losses + global_losses + violation_losses
 
 
 def train_harnn():
-    print("Loading Data")
+    train_or_restore = input("☛ Train or Restore?(T/R): ")
+    while not (train_or_restore.isalpha() and train_or_restore.upper() in ['T', 'R']):
+        train_or_restore = input("✘ The format of your input is illegal, please re-input: ")
+    train_or_restore = train_or_restore.upper()
+    if train_or_restore == 'T':
+        logger = dh.logger_fn("training", "log/training-{0}.log".format(str(int(time.time()))))
+    else:
+        logger = dh.logger_fn("training", "log/restore-{0}.log".format(str(int(time.time()))))
+
+    logger.info("Loading Data...")
     train_data = dh.load_data_and_labels(training_data_file, num_classes_list,
                                          total_classes, embedding_dim, data_aug_flag=False)
     val_data = dh.load_data_and_labels(validation_data_file, num_classes_list,
                                        total_classes, embedding_dim, data_aug_flag=False)
-    x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3 = dh.pad_data(train_data, pad_seq_len)
-    x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3 = dh.pad_data(val_data, pad_seq_len)
+    x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3 = [i.to(device) for i in dh.pad_data(train_data, pad_seq_len)]
+    x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3 = [i.to(device) for i in dh.pad_data(val_data, pad_seq_len)]
     train_dataset = TensorDataset(x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3)
     val_dataset = TensorDataset(x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     vocab_size, pretrained_word2vec_matrix = dh.load_word2vec_matrix(embedding_dim)
 
-    print("Init nn")
+    logger.info("Init nn...")
     net = TextHARNN(num_classes_list=num_classes_list, total_classes=total_classes,
                     vocab_size=vocab_size, lstm_hidden_size=lstm_hidden_size, attention_unit_size=attention_unit_size,
                     fc_hidden_size=fc_hidden_size, embedding_size=embedding_dim, embedding_type=embedding_type,
-                    beta=beta, dropout_keep_prob=dropout_keep_prob)
+                    beta=beta, pretrained_embedding=pretrained_word2vec_matrix, dropout_keep_prob=dropout_keep_prob).to(device)
     criterion = Loss(alpha)
     optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate, weight_decay=l2_reg_lambda)
     if train_or_restore == 'R':
@@ -112,13 +123,13 @@ def train_harnn():
         checkpoint = torch.load(out_dir)
         net.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        model.train()
+        net.train()
 
-    print("Training")
-    writer = SummaryWriter('runs/harnn_experiment_1')
+    logger.info("Training...")
+    writer = SummaryWriter('summary')
     for epoch in range(num_epochs):
-        running_loss = 0.0
-        i = 0
+        train_loss = 0.0
+        train_cnt = 0
         for x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3 in train_loader:
             optimizer.zero_grad()
             _, outputs = net(x_train)
@@ -126,20 +137,88 @@ def train_harnn():
                              y_train_0, y_train_1, y_train_2, y_train_3, y_train)
             loss.backward()
             optimizer.step()
-            running_loss += loss.item()
-            print('[%d, %5d] loss: %.3f' % (epoch + 1, i + 1, running_loss / 2000))
-            writer.add_scalar('training loss', running_loss / 1000, epoch * len(train_loader) + i)
-            i += 1
-        timestamp = str(int(time.time()))
-        out_dir = os.path.abspath(os.path.join(os.path.curdir, "runs/model", timestamp))
-        torch.save({
-            'model_state_dict': net.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-        }, out_dir)
+            train_loss += loss.item()
+            train_cnt += x_train.size()[0]
+            logger.info('[%d, %5d] loss: %.3f' % (epoch + 1, train_cnt + 1, train_loss / train_cnt))
+            writer.add_scalar('training loss', train_loss / train_cnt, epoch * len(train_dataset) + train_cnt)
+        if epoch % evaluate_every == 0:
+            val_loss = 0.0
+            val_cnt = 0
+            eval_pre_tk = [0.0 for _ in range(top_num)]
+            eval_rec_tk = [0.0 for _ in range(top_num)]
+            eval_F_tk = [0.0 for _ in range(top_num)]
+            true_onehot_labels = []
+            predicted_onehot_scores = []
+            predicted_onehot_labels_ts = []
+            predicted_onehot_labels_tk = [[] for _ in range(top_num)]
+            for x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3 in val_loader:
+                scores, outputs = net(x_val)
+                scores = scores[0]
+                loss = criterion(outputs[0], outputs[1], outputs[2], outputs[3], outputs[4], outputs[5], outputs[6],
+                                 y_val_0, y_val_1, y_val_2, y_val_3, y_val)
+                val_loss += loss.item()
+                val_cnt += x_val.size()[0]
+                # Prepare for calculating metrics
+                for onehot_labels in y_val:
+                    true_onehot_labels.append(onehot_labels.tolist())
+                for onehot_scores in scores:
+                    predicted_onehot_scores.append(onehot_scores.tolist())
+                # Predict by threshold
+                batch_predicted_onehot_labels_ts = \
+                    dh.get_onehot_label_threshold(scores=scores.cpu().detach().numpy(), threshold=threshold)
+                for onehot_labels in batch_predicted_onehot_labels_ts:
+                    predicted_onehot_labels_ts.append(onehot_labels)
+                # Predict by topK
+                for num in range(top_num):
+                    batch_predicted_onehot_labels_tk = \
+                        dh.get_onehot_label_topk(scores=scores.cpu().detach().numpy(), top_num=num + 1)
+                    for onehot_labels in batch_predicted_onehot_labels_tk:
+                        predicted_onehot_labels_tk[num].append(onehot_labels)
+
+            # Calculate Precision & Recall & F1
+            eval_pre_ts = precision_score(y_true=np.array(true_onehot_labels),
+                                          y_pred=np.array(predicted_onehot_labels_ts), average='micro')
+            eval_rec_ts = recall_score(y_true=np.array(true_onehot_labels),
+                                       y_pred=np.array(predicted_onehot_labels_ts), average='micro')
+            eval_F_ts = f1_score(y_true=np.array(true_onehot_labels),
+                                 y_pred=np.array(predicted_onehot_labels_ts), average='micro')
+            # Calculate the average AUC
+            eval_auc = roc_auc_score(y_true=np.array(true_onehot_labels),
+                                     y_score=np.array(predicted_onehot_scores), average='micro')
+            # Calculate the average PR
+            eval_prc = average_precision_score(y_true=np.array(true_onehot_labels),
+                                               y_score=np.array(predicted_onehot_scores), average='micro')
+
+            for num in range(top_num):
+                eval_pre_tk[num] = precision_score(y_true=np.array(true_onehot_labels),
+                                                   y_pred=np.array(predicted_onehot_labels_tk[num]), average='micro')
+                eval_rec_tk[num] = recall_score(y_true=np.array(true_onehot_labels),
+                                                y_pred=np.array(predicted_onehot_labels_tk[num]), average='micro')
+                eval_F_tk[num] = f1_score(y_true=np.array(true_onehot_labels),
+                                          y_pred=np.array(predicted_onehot_labels_tk[num]), average='micro')
+            logger.info("All Validation set: Loss {0:g} | AUC {1:g} | AUPRC {2:g}"
+                        .format(val_loss / val_cnt, eval_auc, eval_prc))
+            logger.info("Predict by threshold: Precision {0:g}, Recall {1:g}, F {2:g}"
+                        .format(eval_pre_ts, eval_rec_ts, eval_F_ts))
+            logger.info("Predict by topK:")
+            for num in range(top_num):
+                logger.info("Top{0}: Precision {1:g}, Recall {2:g}, F {3:g}"
+                            .format(num + 1, eval_pre_tk[num], eval_rec_tk[num], eval_F_tk[num]))
+            writer.add_scalar('validation loss', val_loss / val_cnt, epoch)
+            writer.add_scalar('validation AUC', eval_auc, epoch)
+            writer.add_scalar('validation AUPRC', eval_prc, epoch)
+
+        if epoch % checkpoint_every == 0:
+            timestamp = str(int(time.time()))
+            out_dir = os.path.abspath(os.path.join(os.path.curdir, "model", timestamp))
+            torch.save({
+                'model_state_dict': net.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+            }, out_dir)
     writer.add_graph(net, x_train)
     writer.close()
 
-    print('Finished Training')
+    logger.info('Finished Training.')
 
 
 if __name__ == "__main__":

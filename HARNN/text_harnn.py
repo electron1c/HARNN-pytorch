@@ -5,6 +5,17 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
+import utils.data_helper as dh
+
+
+def truncated_normal_(tensor, mean=0, std=0.1):
+    size = tensor.shape
+    tmp = tensor.new_empty(size + (4,)).normal_()
+    valid = (tmp < 2) & (tmp > -2)
+    ind = valid.max(-1, keepdim=True)[1]
+    tensor.data.copy_(tmp.gather(-1, ind).squeeze(-1))
+    tensor.data.mul_(std).add_(mean)
+    return tensor
 
 
 class AttentionLayer(nn.Module):
@@ -49,7 +60,7 @@ class TextHARNN(nn.Module):
             embedding_weight = torch.FloatTensor(np.random.uniform(-1, 1, size=(vocab_size, embedding_size)))
             embedding_weight = Variable(embedding_weight, requires_grad=True)
         else:
-            embedding_weight = torch.from_numpy(pretrained_embedding)
+            embedding_weight = torch.from_numpy(pretrained_embedding).float()
             if embedding_type == 1:
                 embedding_weight = Variable(embedding_weight, requires_grad=True)
         self.embedding = nn.Embedding(vocab_size, embedding_size, _weight=embedding_weight)
@@ -90,6 +101,12 @@ class TextHARNN(nn.Module):
 
         # Global scores
         self.global_scores_fc = nn.Linear(fc_hidden_size, total_classes)
+
+        for name, param in self.named_parameters():
+            if 'embedding' not in name and 'weight' in name:
+                truncated_normal_(param.data, mean=0, std=0.1)
+            else:
+                nn.init.constant_(param.data, 0.1)
 
     def forward(self, input_x):
         # Embedding Layer
@@ -148,15 +165,20 @@ class TextHARNN(nn.Module):
         global_scores = torch.sigmoid(global_logits)
         local_scores = torch.cat((first_scores, second_scores, third_scores, fourth_scores), dim=1)
         scores = self.beta * global_scores + (1 - self.beta) * local_scores
-        return scores, (first_logits, second_logits, third_logits, fourth_logits,
-                        global_logits, first_scores, second_scores)
+        return (scores, first_att_weight, first_visual, second_visual, third_visual, fourth_visual),\
+               (first_logits, second_logits, third_logits, fourth_logits, global_logits, first_scores, second_scores)
 
 
 if __name__ == '__main__':
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    vocab_size, pretrained_word2vec_matrix = dh.load_word2vec_matrix(100)
     textHARNN = TextHARNN(num_classes_list=[9, 128, 661, 8364], total_classes=9162,
-                          vocab_size=1024, lstm_hidden_size=256, attention_unit_size=200, fc_hidden_size=512,
-                          embedding_size=100, embedding_type=1, beta=0.5, dropout_keep_prob=0.5)
-    test_input = torch.LongTensor([[0, 0, 0]])
+                          vocab_size=vocab_size, lstm_hidden_size=256, attention_unit_size=200, fc_hidden_size=512,
+                          embedding_size=100, embedding_type=1, beta=0.5, dropout_keep_prob=0.5, pretrained_embedding=pretrained_word2vec_matrix).to(device)
+    test_input = torch.LongTensor([[0, 0, 0]]).to(device)
     test_output = textHARNN(test_input)
     print(test_output)
 
