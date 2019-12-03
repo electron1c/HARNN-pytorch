@@ -59,14 +59,14 @@ def test_harnn():
                     beta=beta, dropout_keep_prob=dropout_keep_prob)
     criterion = Loss(alpha)
     if best_or_latest == 'L':
-        model = input("☛ Please input the checkpoints model you want to restore, "
-                      "it should be like(1490175368): ")  # The model you want to restore
-        while not (model.isdigit() and len(model) == 10):
-            model = input("✘ The format of your input is illegal, please re-input: ")
-        out_dir = os.path.abspath(os.path.join(os.path.curdir, "runs/model", model))
-        checkpoint = torch.load(out_dir)
-        net.load_state_dict(checkpoint['model_state_dict'])
-        net.eval()
+        models = os.listdir("./model")
+        models.sort(key=lambda x: x[x.find('.'):])
+        out_dir = "./model/" + models[-1]
+    else:
+        out_dir = "./model_best.pth"
+    checkpoint = torch.load(out_dir)
+    net.load_state_dict(checkpoint['model_state_dict'])
+    net.eval()
 
     print("Testing")
     # Collection

@@ -3,10 +3,11 @@ __author__ = 'hy'
 
 import time
 import os
+import shutil
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import TensorDataset, DataLoader
 import torch.optim
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, average_precision_score
@@ -43,9 +44,16 @@ if torch.cuda.is_available():
 else:
     device = torch.device("cpu")
 batch_size = 4
-num_epochs = 20
+num_epochs = 61
 evaluate_every = 5
-checkpoint_every = 20
+checkpoint_every = 10
+best_auprc = 0
+
+
+def save_checkpoint(state, is_best, filename):
+    torch.save(state, filename)
+    if is_best:
+        shutil.copyfile(filename, 'model_best.pth')
 
 
 class Loss(nn.Module):
@@ -85,6 +93,7 @@ class Loss(nn.Module):
 
 
 def train_harnn():
+    global best_auprc
     train_or_restore = input("☛ Train or Restore?(T/R): ")
     while not (train_or_restore.isalpha() and train_or_restore.upper() in ['T', 'R']):
         train_or_restore = input("✘ The format of your input is illegal, please re-input: ")
@@ -99,8 +108,8 @@ def train_harnn():
                                          total_classes, embedding_dim, data_aug_flag=False)
     val_data = dh.load_data_and_labels(validation_data_file, num_classes_list,
                                        total_classes, embedding_dim, data_aug_flag=False)
-    x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3 = [i.to(device) for i in dh.pad_data(train_data, pad_seq_len)]
-    x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3 = [i.to(device) for i in dh.pad_data(val_data, pad_seq_len)]
+    x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3 = dh.pad_data(train_data, pad_seq_len)
+    x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3 = dh.pad_data(val_data, pad_seq_len)
     train_dataset = TensorDataset(x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3)
     val_dataset = TensorDataset(x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
@@ -115,8 +124,7 @@ def train_harnn():
     criterion = Loss(alpha)
     optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate, weight_decay=l2_reg_lambda)
     if train_or_restore == 'R':
-        model = input("☛ Please input the checkpoints model you want to restore, "
-                      "it should be like(1490175368): ")  # The model you want to restore
+        model = input("☛ Please input the checkpoints model you want to restore: ")
         while not (model.isdigit() and len(model) == 10):
             model = input("✘ The format of your input is illegal, please re-input: ")
         out_dir = os.path.abspath(os.path.join(os.path.curdir, "runs/model", model))
@@ -124,13 +132,16 @@ def train_harnn():
         net.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         net.train()
+        best_auprc = checkpoint['best_auprc'].to(device)
 
     logger.info("Training...")
-    writer = SummaryWriter('summary')
+    # writer = SummaryWriter('summary')
     for epoch in range(num_epochs):
         train_loss = 0.0
         train_cnt = 0
         for x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3 in train_loader:
+            x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3 = \
+                [i.to(device) for i in [x_train, y_train, y_train_0, y_train_1, y_train_2, y_train_3]]
             optimizer.zero_grad()
             _, outputs = net(x_train)
             loss = criterion(outputs[0], outputs[1], outputs[2], outputs[3], outputs[4], outputs[5], outputs[6],
@@ -140,7 +151,7 @@ def train_harnn():
             train_loss += loss.item()
             train_cnt += x_train.size()[0]
             logger.info('[%d, %5d] loss: %.3f' % (epoch + 1, train_cnt + 1, train_loss / train_cnt))
-            writer.add_scalar('training loss', train_loss / train_cnt, epoch * len(train_dataset) + train_cnt)
+            # writer.add_scalar('training loss', train_loss / train_cnt, epoch * len(train_dataset) + train_cnt)
         if epoch % evaluate_every == 0:
             val_loss = 0.0
             val_cnt = 0
@@ -152,6 +163,8 @@ def train_harnn():
             predicted_onehot_labels_ts = []
             predicted_onehot_labels_tk = [[] for _ in range(top_num)]
             for x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3 in val_loader:
+                x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3 = \
+                    [i.to(device) for i in [x_val, y_val, y_val_0, y_val_1, y_val_2, y_val_3]]
                 scores, outputs = net(x_val)
                 scores = scores[0]
                 loss = criterion(outputs[0], outputs[1], outputs[2], outputs[3], outputs[4], outputs[5], outputs[6],
@@ -188,6 +201,8 @@ def train_harnn():
             # Calculate the average PR
             eval_prc = average_precision_score(y_true=np.array(true_onehot_labels),
                                                y_score=np.array(predicted_onehot_scores), average='micro')
+            is_best = eval_prc > best_auprc
+            best_auprc = max(eval_prc, best_auprc)
 
             for num in range(top_num):
                 eval_pre_tk[num] = precision_score(y_true=np.array(true_onehot_labels),
@@ -204,19 +219,19 @@ def train_harnn():
             for num in range(top_num):
                 logger.info("Top{0}: Precision {1:g}, Recall {2:g}, F {3:g}"
                             .format(num + 1, eval_pre_tk[num], eval_rec_tk[num], eval_F_tk[num]))
-            writer.add_scalar('validation loss', val_loss / val_cnt, epoch)
-            writer.add_scalar('validation AUC', eval_auc, epoch)
-            writer.add_scalar('validation AUPRC', eval_prc, epoch)
+            # writer.add_scalar('validation loss', val_loss / val_cnt, epoch)
+            # writer.add_scalar('validation AUC', eval_auc, epoch)
+            # writer.add_scalar('validation AUPRC', eval_prc, epoch)
 
         if epoch % checkpoint_every == 0:
             timestamp = str(int(time.time()))
-            out_dir = os.path.abspath(os.path.join(os.path.curdir, "model", timestamp))
-            torch.save({
+            save_checkpoint({
                 'model_state_dict': net.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-            }, out_dir)
-    writer.add_graph(net, x_train)
-    writer.close()
+                'best_auprc': best_auprc,
+            }, is_best, filename=os.path.join(os.path.curdir, "model", "epoch%d.%s.pth" % (epoch, timestamp)))
+    # writer.add_graph(net, x_train)
+    # writer.close()
 
     logger.info('Finished Training.')
 

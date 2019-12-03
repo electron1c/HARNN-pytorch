@@ -502,12 +502,12 @@ def pad_sequence_with_maxlen(sequences, batch_first=False, padding_value=0, maxl
 
     out_tensor = sequences[0].data.new(*out_dims).fill_(padding_value)
     for i, tensor in enumerate(sequences):
-        length = tensor.size(0)
+        length = min(max_len, tensor.size(0))
         # use index notation to prevent duplicate references to the tensor
         if batch_first:
-            out_tensor[i, :length, ...] = tensor
+            out_tensor[i, :length, ...] = tensor[:length]
         else:
-            out_tensor[:length, i, ...] = tensor
+            out_tensor[:length, i, ...] = tensor[:length]
 
     return out_tensor
 
