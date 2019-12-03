@@ -1,6 +1,6 @@
 # Hierarchical Multi-Label Text Classification
 
-This repository is a Pytorch implementation of [this research project](https://dl.acm.org/citation.cfm?id=3357384.3357885).
+This repository is a Pytorch implementation of [this research project](https://dl.acm.org/citation.cfm?id=3357384.3357885), and it is accepted by CIKM'19.
 
 The main objective of the project is to solve the hierarchical multi-label text classification (**HMTC**) problem. Different from the multi-label text classification, HMTC assigns each instance (object) into multiple categories and these categories are stored in a hierarchy structure, is a fundamental but challenging task of numerous applications.
 
