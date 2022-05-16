@@ -143,7 +143,7 @@ class TextHARNN(nn.Module):
         fourth_att_input = torch.mul(lstm_out, third_visual.unsqueeze(-1))
         fourth_att_weight, fourth_att_out = self.fourth_attention(fourth_att_input)
         fourth_local_input = torch.cat((lstm_out_pool, fourth_att_out), dim=1)
-        fourth_local_fc_out = self.second_fc(fourth_local_input)
+        fourth_local_fc_out = self.fourth_fc(fourth_local_input)
         fourth_logits, fourth_scores, fourth_visual = self.fourth_local(fourth_local_fc_out, fourth_att_weight)
 
         # Concat
